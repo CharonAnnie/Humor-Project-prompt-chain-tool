@@ -3,11 +3,12 @@
 // single-schema short form of the ones the generator emits -- same behaviour for
 // `public`, without ~150 lines of multi-schema generics this project never uses.
 //
-// HAND-EXTENDED, and it should not stay that way. `prompt_chain_runs`,
-// `llm_responses.run_id` and the two reorder functions were written in by hand
-// to match week8_prompt_chain_tool.sql so the app could be built before the
-// migration was applied. Regenerate once it is applied, which is also how any
-// drift between this file and the real schema gets caught.
+// `prompt_chain_runs`, `llm_responses.run_id` and the two reorder functions were
+// written in by hand so the app could be built before Week 8's migration was
+// applied. The migration has since been applied and these were checked against
+// a fresh `generate_typescript_types` -- they match it field for field. The
+// helper generics at the bottom stay in the short form rather than the
+// generator's multi-schema version, which is the one deliberate difference.
 
 export type Json =
   | string
@@ -1006,6 +1007,15 @@ export type Database = {
       };
     };
     Functions: {
+      bump_caption_counts: {
+        Args: {
+          p_caption_id: string;
+          p_down_delta: number;
+          p_up_delta: number;
+          p_vote_date: string;
+        };
+        Returns: undefined;
+      };
       compact_prompt_chain_steps: {
         Args: { p_chain_id: number };
         Returns: undefined;
