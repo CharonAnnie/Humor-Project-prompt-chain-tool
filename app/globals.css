@@ -1,26 +1,210 @@
 @import "tailwindcss";
 
+/* Prompt Chain Tool surface.
+ *
+ * Every colour in the app is one of these tokens -- no component ships a hex
+ * value -- because the theme has to be switchable three ways and a hardcoded
+ * colour is a thing that only looks right in one of them.
+ *
+ * Cooler and greener than the admin panel's indigo on purpose: these are two
+ * different tools against one database, and telling them apart at a glance is
+ * worth more than a shared brand.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+
+  --background: #f6f8f8;
+  --surface: #ffffff;
+  --surface-2: #eef2f2;
+  --foreground: #0f1719;
+  --muted: #566468;
+  --border: #dde4e4;
+  --accent: #0d7d7d;
+  --accent-fg: #ffffff;
+  --positive: #0f8f62;
+  --negative: #cf2b45;
+  --warning: #9a5b08;
+}
+
+/* Dark, twice.
+ *
+ * The media query is the system default and is skipped when the preference is
+ * an explicit "light"; the attribute selector is an explicit "dark". Both are
+ * needed: without the media query there is no dark mode before the theme script
+ * runs (or at all, with JS off), and without the attribute selector a person on
+ * a light OS cannot choose dark.
+ *
+ * The two blocks must stay identical. Keeping them adjacent is the whole
+ * defence, so add tokens to both or to neither.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --background: #0a1012;
+    --surface: #131c1f;
+    --surface-2: #1a2529;
+    --foreground: #e6edee;
+    --muted: #8fa1a5;
+    --border: #243236;
+    --accent: #3fb9ad;
+    --accent-fg: #06100f;
+    --positive: #35d39b;
+    --negative: #ff6b82;
+    --warning: #efb441;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --background: #0a1012;
+  --surface: #131c1f;
+  --surface-2: #1a2529;
+  --foreground: #e6edee;
+  --muted: #8fa1a5;
+  --border: #243236;
+  --accent: #3fb9ad;
+  --accent-fg: #06100f;
+  --positive: #35d39b;
+  --negative: #ff6b82;
+  --warning: #efb441;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--warning);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border
+           border-transparent px-3.5 py-2 text-sm font-medium
+           transition-colors disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+  }
+  .btn-primary:hover { filter: brightness(1.08); }
+
+  .btn-secondary {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--foreground);
+  }
+  .btn-secondary:hover { background: var(--surface-2); }
+
+  .btn-danger {
+    background: transparent;
+    border-color: var(--negative);
+    color: var(--negative);
+  }
+  .btn-danger:hover {
+    background: var(--negative);
+    color: var(--accent-fg);
+  }
+
+  .btn-lg { @apply px-5 py-2.5 text-base; }
+
+  /* Square, icon-sized. The reorder arrows and the theme toggle are the only
+     buttons in the app with no label, and a 28px target is the floor. */
+  .btn-icon {
+    @apply inline-flex size-7 shrink-0 items-center justify-center rounded-md
+           border text-xs transition-colors disabled:pointer-events-none
+           disabled:opacity-35;
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--foreground);
+  }
+  .btn-icon:hover:not(:disabled) {
+    background: var(--surface-2);
+    color: var(--accent);
+  }
+
+  /* No padding here: the `Card` component in ui.tsx owns that, so a caller can
+     override it with `!p-3` without fighting this rule. */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    @apply rounded-xl;
+  }
+
+  .label {
+    @apply text-xs font-medium uppercase tracking-wide;
+    color: var(--muted);
+  }
+
+  .nav-link {
+    @apply rounded-lg px-2.5 py-1.5 text-sm transition-colors;
+    color: color-mix(in oklab, var(--foreground) 78%, var(--background));
+  }
+  .nav-link:hover {
+    background: var(--surface-2);
+    color: var(--foreground);
+  }
+  .nav-link-active {
+    background: var(--surface-2);
+    color: var(--accent);
+    @apply font-medium;
+  }
+
+  .input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--foreground);
+    @apply w-full rounded-lg px-3 py-2 text-sm;
+  }
+  .input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  /* Prompt templates are edited in these, so they are monospace and tall
+     enough to see a whole step's prompt without scrolling. */
+  .input-mono {
+    @apply font-mono text-xs leading-relaxed;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium;
+    background: var(--surface-2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+
+  /* Model output and prompts, rendered rather than edited. */
+  .pre {
+    background: var(--surface-2);
+    @apply overflow-x-auto rounded-lg p-3 font-mono text-xs whitespace-pre-wrap;
+  }
+
+  .notice-error {
+    border: 1px solid color-mix(in oklab, var(--negative) 35%, transparent);
+    background: color-mix(in oklab, var(--negative) 8%, transparent);
+    color: var(--negative);
+    @apply rounded-xl p-3 text-sm;
+  }
+
+  .notice-info {
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    @apply rounded-xl p-3 text-sm;
+  }
 }

@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# editors
+/.idea/
+
+# Claude Code local settings (the shared .mcp.json IS committed)
+.claude/settings.local.json
