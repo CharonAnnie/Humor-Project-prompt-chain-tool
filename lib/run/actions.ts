@@ -37,6 +37,18 @@ function fail(message: string): { ok: false; message: string } {
   return { ok: false, message };
 }
 
+/** The errors these writes can actually produce, as sentences. */
+function friendly(error: { code?: string; message: string }): string {
+  switch (error.code) {
+    case "42501":
+      return "You do not have permission to change this run.";
+    case "23514":
+      return `Rejected by a database constraint: ${error.message}`;
+    default:
+      return error.message;
+  }
+}
+
 // ── Starting a run ───────────────────────────────────────────────────────────
 
 /**
@@ -379,6 +391,58 @@ async function rollUpTotals(supabase: Supabase, runId: string) {
       latency_ms: data.reduce((sum, row) => sum + (row.latency_ms ?? 0), 0),
     })
     .eq("id", runId);
+}
+
+// ── Resuming a failed run ────────────────────────────────────────────────────
+
+/**
+ * Puts a failed run back to `running` so the driver resumes from the step that
+ * failed.
+ *
+ * This exists because the common failure is not a bad prompt, it is a busy
+ * model: a 503 on step 3 of 3 would otherwise strand two successful calls that
+ * were already paid for, and the only way forward would be to run the whole
+ * chain again. `runNextStep` counts *succeeded* responses to decide what to run
+ * next, so flipping the status is all a resume needs.
+ *
+ * The failed `llm_responses` row is deliberately left in place. It is append-only
+ * by grant and it is the evidence of what happened; a retry that erased the
+ * attempt it is retrying would make the audit trail flattering rather than true.
+ */
+export async function retryRun(
+  _prev: { ok: boolean; message?: string } | null,
+  form: FormData,
+): Promise<{ ok: boolean; message?: string }> {
+  await requireSuperadmin();
+
+  const runId = (form.get("run_id") as string | null)?.trim();
+  if (!runId) return { ok: false, message: "Which run?" };
+
+  const supabase = await createClient();
+
+  // Guarded on `status = 'failed'` in the statement itself rather than read
+  // first and written after: a run that is already running must not be nudged,
+  // or two drivers end up on the same step.
+  const { data, error } = await supabase
+    .from("prompt_chain_runs")
+    .update({ status: "running", error_message: null, finished_at: null })
+    .eq("id", runId)
+    .eq("status", "failed")
+    .select("id, chain_id");
+
+  if (error) return { ok: false, message: friendly(error) };
+
+  if (!data || data.length === 0) {
+    return {
+      ok: false,
+      message: "That run is not in a failed state, so there is nothing to resume.",
+    };
+  }
+
+  revalidatePath(`/chains/${data[0].chain_id}/media/${runId}`);
+  revalidatePath(`/chains/${data[0].chain_id}/media`);
+
+  return { ok: true };
 }
 
 // ── Publishing ───────────────────────────────────────────────────────────────

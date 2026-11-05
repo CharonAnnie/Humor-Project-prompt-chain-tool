@@ -11,7 +11,13 @@ import {
   formatDateTime,
 } from "@/app/components/ui";
 import PublishButton from "./PublishButton";
+import RetryButton from "./RetryButton";
 import RunProgress from "./RunProgress";
+
+// This page's Server Functions make the model calls, so the platform's default
+// function budget is not enough: one step is allowed up to ~45s of attempts.
+// The same 60 as Caption Drop's /create page, and for the same reason.
+export const maxDuration = 60;
 
 export default function RunPage(props: PageProps<"/chains/[id]/media/[runId]">) {
   return (
@@ -114,7 +120,12 @@ async function Detail({
             </p>
 
             {run.error_message && (
-              <p className="notice-error mt-4">{run.error_message}</p>
+              <div className="notice-error mt-4">
+                <p>{run.error_message}</p>
+                {run.status === "failed" && (
+                  <RetryButton runId={run.id} resumeFrom={succeeded.length + 1} />
+                )}
+              </div>
             )}
           </div>
         </div>

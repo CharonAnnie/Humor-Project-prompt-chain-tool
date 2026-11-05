@@ -50,8 +50,36 @@ export class StepCallError extends Error {
 
 // One step has to fit inside the platform's function budget with room for the
 // database writes around it. The tool runs one step per request precisely so
-// this cap applies per call rather than to a whole chain.
-const CALL_TIMEOUT_MS = 45_000;
+// these caps apply per step rather than to a whole chain.
+//
+// The numbers are the ones lib/gemini.ts in the other two apps arrived at by
+// measurement, re-scoped from "a whole chain of calls" to "one step":
+const STEP_BUDGET_MS = 45_000;     // everything below must finish inside this
+const ATTEMPT_TIMEOUT_MS = 20_000; // a single call that stalls is cut loose
+const MIN_ATTEMPT_MS = 6_000;      // below this there is no point starting one
+const ATTEMPTS = 3;
+
+// Capacity problems, all of them worth asking the same model again:
+//
+//   503  "currently experiencing high demand, spikes are usually temporary" --
+//        which is precisely a thing that is true for a second and then is not
+//   429  a burst limit (the daily cap is told apart by its message below)
+//   408, 500, 502, 504  transport and upstream hiccups
+//
+// A 400 or 403 is our bug or a bad key and fails identically on a retry, so it
+// is thrown immediately rather than tried twice.
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+
+// Deliberately no model fallback, unlike lib/gemini.ts in the other two apps.
+// They substitute the next model in a chain because any caption beats none.
+// Here the step names its model and its temperature, and the entire value of
+// the run page is showing what each step actually did -- so quietly running
+// step 3 on a different model would either misreport the model or contradict
+// the configuration being evaluated. The same model is retried instead, and a
+// run that still cannot get through is resumable from the step that failed.
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 let googleClient: GoogleGenAI | null = null;
 
@@ -83,11 +111,11 @@ function isDailyQuota(error: unknown): boolean {
 
 async function callGoogle(call: StepCall): Promise<StepCallResult> {
   const ai = google();
-  const startedAt = Date.now();
 
   // Body keys are snake_case and an unknown one is rejected outright; the
   // options argument is camelCase. Both of those are measured findings carried
   // over from lib/gemini.ts in the other two apps rather than guesses.
+  //
   // Typed as the SDK's own content union rather than a loose object array, so
   // a wrong key here is a compile error instead of an "Unknown parameter" at
   // run time.
@@ -115,91 +143,126 @@ async function callGoogle(call: StepCall): Promise<StepCallResult> {
     generationConfig.max_output_tokens = call.maxOutputTokens;
   }
 
-  try {
-    const response = await ai.interactions.create(
-      {
-        model: call.modelSlug,
-        input,
-        ...(call.responseSchema
-          ? {
-              response_format: {
-                type: "text" as const,
-                mime_type: "application/json" as const,
-                schema: call.responseSchema,
-              },
-            }
-          : {}),
-        ...(Object.keys(generationConfig).length > 0
-          ? { generation_config: generationConfig }
-          : {}),
-      },
-      // `timeout`, not `timeout_ms`: an unknown key here is dropped silently,
-      // which would leave the call uncapped. `maxRetries: 0` is what this
-      // client honours -- without it the SDK retries a 429 behind our back and
-      // a step that should fail in 300ms takes 34 seconds to say so.
-      { timeout: CALL_TIMEOUT_MS, maxRetries: 0 },
-    );
+  const request = {
+    model: call.modelSlug,
+    input,
+    ...(call.responseSchema
+      ? {
+          response_format: {
+            type: "text" as const,
+            mime_type: "application/json" as const,
+            schema: call.responseSchema,
+          },
+        }
+      : {}),
+    ...(Object.keys(generationConfig).length > 0
+      ? { generation_config: generationConfig }
+      : {}),
+  };
 
-    const text = response.output_text?.trim() ?? "";
+  const deadline = Date.now() + STEP_BUDGET_MS;
+  let lastError: unknown = null;
 
-    if (!text) {
-      throw new StepCallError(
-        `${call.modelSlug} returned an empty response for this step.`,
-      );
-    }
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    const startedAt = Date.now();
+    const remaining = deadline - startedAt;
 
-    // A step with a schema asked for JSON, so parsing it here means the next
-    // step interpolates structured output and the run page can pretty-print it.
-    // A model that ignores its schema is recorded as text rather than failed.
-    let json: unknown = null;
-    if (call.responseSchema) {
-      try {
-        json = JSON.parse(text);
-      } catch {
-        json = null;
+    // Never start a call that cannot finish inside the budget: reporting a real
+    // error beats being killed mid-request with the step unrecorded.
+    if (remaining < MIN_ATTEMPT_MS) break;
+
+    try {
+      const response = await ai.interactions.create(request, {
+        // `timeout`, not `timeout_ms`: an unknown key here is dropped silently,
+        // which would leave the call uncapped. `maxRetries: 0` is what this
+        // client honours -- without it the SDK retries a 429 behind our back,
+        // on its own schedule, inside one of our attempts.
+        timeout: Math.min(ATTEMPT_TIMEOUT_MS, remaining),
+        maxRetries: 0,
+      });
+
+      const text = response.output_text?.trim() ?? "";
+
+      if (!text) {
+        throw new StepCallError(
+          `${call.modelSlug} returned an empty response for this step.`,
+        );
       }
+
+      // A step with a schema asked for JSON, so parsing it here means the next
+      // step interpolates structured output and the run page can pretty-print
+      // it. A model that ignores its schema is recorded as text, not failed.
+      let json: unknown = null;
+      if (call.responseSchema) {
+        try {
+          json = JSON.parse(text);
+        } catch {
+          json = null;
+        }
+      }
+
+      return {
+        text,
+        json,
+        inputTokens: response.usage?.total_input_tokens ?? null,
+        outputTokens: response.usage?.total_output_tokens ?? null,
+        latencyMs: Date.now() - startedAt,
+      };
+    } catch (error) {
+      lastError = error;
+
+      // An empty or unreadable reply is a different kind of failure from a busy
+      // server, and asking again changes nothing about it.
+      if (error instanceof StepCallError) throw error;
+
+      const status = statusOf(error);
+
+      if (status === 400 || status === 401 || status === 403) {
+        throw new StepCallError(
+          `${call.modelSlug} rejected the request (${status}). Check GEMINI_API_KEY, and check that this step's model slug is one the provider still serves.`,
+          error,
+        );
+      }
+
+      if (status === 404) {
+        throw new StepCallError(
+          `The provider does not serve "${call.modelSlug}" any more. Mark it inactive in the registry and point this step at a model that is.`,
+          error,
+        );
+      }
+
+      // A spent daily quota will still be spent in two seconds.
+      if (isDailyQuota(error)) {
+        throw new StepCallError(
+          `${call.modelSlug} is out of free-tier requests for today. The cap is per model, so pointing this step at a different model will run now.`,
+          error,
+        );
+      }
+
+      if (status !== null && !RETRYABLE_STATUS.has(status)) {
+        throw new StepCallError(
+          `${call.modelSlug} did not answer: ${
+            (error as { message?: string })?.message ?? `status ${status}`
+          }`,
+          error,
+        );
+      }
+
+      // Retryable. Back off a little further each time -- a model under load
+      // wants a breath, not an immediate second request.
+      if (attempt < ATTEMPTS) await sleep(1_000 * attempt);
     }
-
-    return {
-      text,
-      json,
-      inputTokens: response.usage?.total_input_tokens ?? null,
-      outputTokens: response.usage?.total_output_tokens ?? null,
-      latencyMs: Date.now() - startedAt,
-    };
-  } catch (error) {
-    if (error instanceof StepCallError) throw error;
-
-    const status = statusOf(error);
-
-    if (status === 400 || status === 401 || status === 403) {
-      throw new StepCallError(
-        `${call.modelSlug} rejected the request (${status}). Check GEMINI_API_KEY, and check that this step's model slug is one the provider still serves.`,
-        error,
-      );
-    }
-
-    if (status === 404) {
-      throw new StepCallError(
-        `The provider does not serve "${call.modelSlug}" any more. Mark it inactive in the registry and point this step at a model that is.`,
-        error,
-      );
-    }
-
-    if (isDailyQuota(error)) {
-      throw new StepCallError(
-        `${call.modelSlug} is out of free-tier requests for today. The cap is per model, so pointing this step at a different model will run now.`,
-        error,
-      );
-    }
-
-    throw new StepCallError(
-      `${call.modelSlug} did not answer: ${
-        (error as { message?: string })?.message ?? "unknown error"
-      }`,
-      error,
-    );
   }
+
+  const status = statusOf(lastError);
+  const detail = (lastError as { message?: string })?.message ?? "no response";
+
+  throw new StepCallError(
+    status === 503
+      ? `${call.modelSlug} is under heavy load and turned down ${ATTEMPTS} attempts over ${Math.round(STEP_BUDGET_MS / 1000)}s. This clears on its own: use Retry on this run and it picks up from this step, keeping the steps that already succeeded.`
+      : `${call.modelSlug} did not answer after ${ATTEMPTS} attempts: ${detail}`,
+    lastError,
+  );
 }
 
 /**

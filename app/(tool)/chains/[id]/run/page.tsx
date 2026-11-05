@@ -6,6 +6,10 @@ import { getRunnableChain, listSeedImages } from "@/lib/data/chains";
 import { Card, EmptyState, PageHeader, Skeleton } from "@/app/components/ui";
 import RunLauncher from "./RunLauncher";
 
+// `startRun` uploads an image row and creates the run; no model call happens
+// here, but the Storage round trip deserves more than the default budget.
+export const maxDuration = 60;
+
 export default function RunPage(props: PageProps<"/chains/[id]/run">) {
   return (
     <Suspense fallback={<Skeleton className="h-96" />}>

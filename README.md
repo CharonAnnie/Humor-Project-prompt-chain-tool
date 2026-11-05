@@ -96,6 +96,21 @@ the `banned` ones, interpolated as the list to avoid). An unrecognised
 placeholder is left in the prompt rather than blanked, so a typo is visible in
 the recorded request instead of silently producing a worse answer.
 
+**Transient failures.** A step retries its own model up to 3 times inside a 45s
+budget for the statuses that mean "busy rather than wrong" — 503, a 429 burst
+limit, 408/500/502/504. A 400/401/403 (our bug or a bad key), a 404 (retired
+model) and a spent daily quota are thrown immediately, because they fail
+identically on a second attempt. If a step still cannot get through, the run is
+marked failed and the run page offers **Retry from step N**, which resumes from
+that step and keeps the calls that already succeeded — `runNextStep` decides
+where to carry on by counting *succeeded* responses. The failed attempt stays in
+`llm_responses`, which is append-only by grant.
+
+There is deliberately **no model fallback**, unlike `lib/gemini.ts` in the other
+two apps: they substitute the next model in a chain because any caption beats
+none, whereas here the step names its model and temperature and the whole point
+of the run page is showing what each step actually did.
+
 **Providers.** A step calls whatever provider its model belongs to; only
 `google` has an adapter, because `GEMINI_API_KEY` is the only key this project
 holds. That matches what the registry already says about itself — `openai` and
